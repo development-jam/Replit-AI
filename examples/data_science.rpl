@@ -1,0 +1,710 @@
+// Advanced Data Science and Machine Learning
+import Math.*;
+import Array.*;
+import FileSystem.*;
+import Threading.*;
+
+class Matrix {
+    var data: Array<Array<float>>;
+    var rows: int;
+    var cols: int;
+    
+    fn new(row_count: int, col_count: int) -> Matrix {
+        this.rows = row_count;
+        this.cols = col_count;
+        this.data = Array<Array<float>>();
+        
+        for (var i = 0; i < rows; i++) {
+            var row = Array<float>(cols);
+            for (var j = 0; j < cols; j++) {
+                row[j] = 0.0;
+            }
+            data.push(row);
+        }
+        
+        return this;
+    }
+    
+    fn from_array(arr: Array<Array<float>>) -> Matrix {
+        var matrix = Matrix(arr.size(), arr[0].size());
+        matrix.data = arr;
+        return matrix;
+    }
+    
+    fn identity(size: int) -> Matrix {
+        var matrix = Matrix(size, size);
+        for (var i = 0; i < size; i++) {
+            matrix.set(i, i, 1.0);
+        }
+        return matrix;
+    }
+    
+    fn get(row: int, col: int) -> float {
+        return data[row][col];
+    }
+    
+    fn set(row: int, col: int, value: float) {
+        data[row][col] = value;
+    }
+    
+    fn transpose() -> Matrix {
+        var result = Matrix(cols, rows);
+        for (var i = 0; i < rows; i++) {
+            for (var j = 0; j < cols; j++) {
+                result.set(j, i, get(i, j));
+            }
+        }
+        return result;
+    }
+    
+    fn multiply(other: Matrix) -> Matrix {
+        if (cols != other.rows) {
+            throw "Matrix dimensions incompatible for multiplication";
+        }
+        
+        var result = Matrix(rows, other.cols);
+        
+        // Parallel matrix multiplication
+        Threading.parallel_for(0, rows, fn(i) {
+            for (var j = 0; j < other.cols; j++) {
+                var sum = 0.0;
+                for (var k = 0; k < cols; k++) {
+                    sum += get(i, k) * other.get(k, j);
+                }
+                result.set(i, j, sum);
+            }
+        });
+        
+        return result;
+    }
+    
+    fn add(other: Matrix) -> Matrix {
+        if (rows != other.rows || cols != other.cols) {
+            throw "Matrix dimensions must match for addition";
+        }
+        
+        var result = Matrix(rows, cols);
+        for (var i = 0; i < rows; i++) {
+            for (var j = 0; j < cols; j++) {
+                result.set(i, j, get(i, j) + other.get(i, j));
+            }
+        }
+        return result;
+    }
+    
+    fn scalar_multiply(scalar: float) -> Matrix {
+        var result = Matrix(rows, cols);
+        for (var i = 0; i < rows; i++) {
+            for (var j = 0; j < cols; j++) {
+                result.set(i, j, get(i, j) * scalar);
+            }
+        }
+        return result;
+    }
+    
+    fn determinant() -> float {
+        if (rows != cols) {
+            throw "Determinant only defined for square matrices";
+        }
+        
+        if (rows == 1) return get(0, 0);
+        if (rows == 2) return get(0, 0) * get(1, 1) - get(0, 1) * get(1, 0);
+        
+        var det = 0.0;
+        for (var col = 0; col < cols; col++) {
+            var minor = get_minor(0, col);
+            var cofactor = Math.pow(-1, col) * get(0, col) * minor.determinant();
+            det += cofactor;
+        }
+        return det;
+    }
+    
+    fn get_minor(exclude_row: int, exclude_col: int) -> Matrix {
+        var result = Matrix(rows - 1, cols - 1);
+        var result_row = 0;
+        
+        for (var i = 0; i < rows; i++) {
+            if (i == exclude_row) continue;
+            
+            var result_col = 0;
+            for (var j = 0; j < cols; j++) {
+                if (j == exclude_col) continue;
+                
+                result.set(result_row, result_col, get(i, j));
+                result_col++;
+            }
+            result_row++;
+        }
+        return result;
+    }
+    
+    fn inverse() -> Matrix {
+        var det = determinant();
+        if (Math.abs(det) < 1e-10) {
+            throw "Matrix is singular and cannot be inverted";
+        }
+        
+        var adj = adjugate();
+        return adj.scalar_multiply(1.0 / det);
+    }
+    
+    fn adjugate() -> Matrix {
+        var result = Matrix(rows, cols);
+        for (var i = 0; i < rows; i++) {
+            for (var j = 0; j < cols; j++) {
+                var minor = get_minor(i, j);
+                var cofactor = Math.pow(-1, i + j) * minor.determinant();
+                result.set(j, i, cofactor); // Note: transposed
+            }
+        }
+        return result;
+    }
+    
+    fn save_to_csv(file_path: string) {
+        var content = "";
+        for (var i = 0; i < rows; i++) {
+            for (var j = 0; j < cols; j++) {
+                if (j > 0) content += ",";
+                content += get(i, j);
+            }
+            content += "\n";
+        }
+        FileSystem.write_file(file_path, content);
+    }
+    
+    fn load_from_csv(file_path: string) -> Matrix {
+        var content = FileSystem.read_file(file_path);
+        var lines = StringUtils.split(content, '\n');
+        var rows = Array<Array<float>>();
+        
+        for (var line in lines) {
+            if (line.length() > 0) {
+                var values = StringUtils.split(line, ',');
+                var row = Array<float>();
+                for (var value in values) {
+                    row.push(StringUtils.to_float(StringUtils.trim(value)));
+                }
+                rows.push(row);
+            }
+        }
+        
+        return Matrix.from_array(rows);
+    }
+}
+
+class DataFrame {
+    var columns: Array<string>;
+    var data: Matrix;
+    var index: Array<string>;
+    
+    fn new(column_names: Array<string>) -> DataFrame {
+        this.columns = column_names;
+        this.data = Matrix(0, column_names.size());
+        this.index = Array<string>();
+        return this;
+    }
+    
+    fn load_csv(file_path: string, has_header: bool = true) -> DataFrame {
+        var content = FileSystem.read_file(file_path);
+        var lines = StringUtils.split(content, '\n');
+        
+        var start_row = 0;
+        var columns = Array<string>();
+        
+        if (has_header && lines.size() > 0) {
+            var header_values = StringUtils.split(lines[0], ',');
+            for (var value in header_values) {
+                columns.push(StringUtils.trim(value));
+            }
+            start_row = 1;
+        } else {
+            // Generate column names
+            var first_line = StringUtils.split(lines[0], ',');
+            for (var i = 0; i < first_line.size(); i++) {
+                columns.push("col_" + i);
+            }
+        }
+        
+        var df = DataFrame(columns);
+        
+        for (var i = start_row; i < lines.size(); i++) {
+            if (lines[i].length() > 0) {
+                var values = StringUtils.split(lines[i], ',');
+                var row = Array<float>();
+                for (var value in values) {
+                    row.push(StringUtils.to_float(StringUtils.trim(value)));
+                }
+                df.add_row(row);
+            }
+        }
+        
+        return df;
+    }
+    
+    fn add_row(row_data: Array<float>) {
+        if (row_data.size() != columns.size()) {
+            throw "Row data size must match column count";
+        }
+        
+        // Resize matrix to accommodate new row
+        var new_matrix = Matrix(data.rows + 1, data.cols);
+        
+        // Copy existing data
+        for (var i = 0; i < data.rows; i++) {
+            for (var j = 0; j < data.cols; j++) {
+                new_matrix.set(i, j, data.get(i, j));
+            }
+        }
+        
+        // Add new row
+        for (var j = 0; j < row_data.size(); j++) {
+            new_matrix.set(data.rows, j, row_data[j]);
+        }
+        
+        data = new_matrix;
+        index.push("row_" + data.rows);
+    }
+    
+    fn get_column(column_name: string) -> Array<float> {
+        var col_index = columns.find(column_name);
+        if (col_index == -1) {
+            throw "Column not found: " + column_name;
+        }
+        
+        var column_data = Array<float>();
+        for (var i = 0; i < data.rows; i++) {
+            column_data.push(data.get(i, col_index));
+        }
+        return column_data;
+    }
+    
+    fn set_column(column_name: string, column_data: Array<float>) {
+        var col_index = columns.find(column_name);
+        if (col_index == -1) {
+            throw "Column not found: " + column_name;
+        }
+        
+        if (column_data.size() != data.rows) {
+            throw "Column data size must match row count";
+        }
+        
+        for (var i = 0; i < data.rows; i++) {
+            data.set(i, col_index, column_data[i]);
+        }
+    }
+    
+    fn describe() -> DataFrame {
+        var stats = DataFrame(Array<string>["count", "mean", "std", "min", "25%", "50%", "75%", "max"]);
+        
+        for (var col_name in columns) {
+            var col_data = get_column(col_name);
+            var stats_data = Array<float>();
+            
+            stats_data.push(col_data.size()); // count
+            stats_data.push(Statistics.mean(col_data)); // mean
+            stats_data.push(Statistics.std(col_data)); // std
+            stats_data.push(Statistics.min(col_data)); // min
+            stats_data.push(Statistics.percentile(col_data, 25)); // 25%
+            stats_data.push(Statistics.percentile(col_data, 50)); // median
+            stats_data.push(Statistics.percentile(col_data, 75)); // 75%
+            stats_data.push(Statistics.max(col_data)); // max
+            
+            // This would add a column to the stats dataframe
+            // Implementation depends on how we handle column addition
+        }
+        
+        return stats;
+    }
+    
+    fn filter(condition: fn(Array<float>) -> bool) -> DataFrame {
+        var result = DataFrame(columns);
+        
+        for (var i = 0; i < data.rows; i++) {
+            var row = Array<float>();
+            for (var j = 0; j < data.cols; j++) {
+                row.push(data.get(i, j));
+            }
+            
+            if (condition(row)) {
+                result.add_row(row);
+            }
+        }
+        
+        return result;
+    }
+    
+    fn group_by(column_name: string) -> Map<float, DataFrame> {
+        var groups = Map<float, DataFrame>();
+        var col_data = get_column(column_name);
+        
+        for (var i = 0; i < data.rows; i++) {
+            var key = col_data[i];
+            if (!groups.contains(key)) {
+                groups[key] = DataFrame(columns);
+            }
+            
+            var row = Array<float>();
+            for (var j = 0; j < data.cols; j++) {
+                row.push(data.get(i, j));
+            }
+            groups[key].add_row(row);
+        }
+        
+        return groups;
+    }
+    
+    fn save_csv(file_path: string) {
+        var content = StringUtils.join(columns, ",") + "\n";
+        
+        for (var i = 0; i < data.rows; i++) {
+            var row_values = Array<string>();
+            for (var j = 0; j < data.cols; j++) {
+                row_values.push(data.get(i, j).to_string());
+            }
+            content += StringUtils.join(row_values, ",") + "\n";
+        }
+        
+        FileSystem.write_file(file_path, content);
+    }
+}
+
+class Statistics {
+    fn mean(data: Array<float>) -> float {
+        if (data.empty()) return 0.0;
+        
+        var sum = 0.0;
+        for (var value in data) {
+            sum += value;
+        }
+        return sum / data.size();
+    }
+    
+    fn median(data: Array<float>) -> float {
+        if (data.empty()) return 0.0;
+        
+        var sorted_data = data.copy();
+        sorted_data.sort();
+        
+        var mid = sorted_data.size() / 2;
+        if (sorted_data.size() % 2 == 0) {
+            return (sorted_data[mid - 1] + sorted_data[mid]) / 2.0;
+        } else {
+            return sorted_data[mid];
+        }
+    }
+    
+    fn std(data: Array<float>) -> float {
+        return Math.sqrt(variance(data));
+    }
+    
+    fn variance(data: Array<float>) -> float {
+        if (data.size() < 2) return 0.0;
+        
+        var data_mean = mean(data);
+        var sum_sq_diff = 0.0;
+        
+        for (var value in data) {
+            var diff = value - data_mean;
+            sum_sq_diff += diff * diff;
+        }
+        
+        return sum_sq_diff / (data.size() - 1);
+    }
+    
+    fn min(data: Array<float>) -> float {
+        if (data.empty()) return 0.0;
+        
+        var minimum = data[0];
+        for (var value in data) {
+            if (value < minimum) minimum = value;
+        }
+        return minimum;
+    }
+    
+    fn max(data: Array<float>) -> float {
+        if (data.empty()) return 0.0;
+        
+        var maximum = data[0];
+        for (var value in data) {
+            if (value > maximum) maximum = value;
+        }
+        return maximum;
+    }
+    
+    fn percentile(data: Array<float>, p: float) -> float {
+        if (data.empty()) return 0.0;
+        
+        var sorted_data = data.copy();
+        sorted_data.sort();
+        
+        var index = (p / 100.0) * (sorted_data.size() - 1);
+        var lower = Math.floor(index);
+        var upper = Math.ceil(index);
+        
+        if (lower == upper) {
+            return sorted_data[lower];
+        } else {
+            var weight = index - lower;
+            return sorted_data[lower] * (1 - weight) + sorted_data[upper] * weight;
+        }
+    }
+    
+    fn correlation(x: Array<float>, y: Array<float>) -> float {
+        if (x.size() != y.size() || x.empty()) return 0.0;
+        
+        var x_mean = mean(x);
+        var y_mean = mean(y);
+        
+        var numerator = 0.0;
+        var x_sum_sq = 0.0;
+        var y_sum_sq = 0.0;
+        
+        for (var i = 0; i < x.size(); i++) {
+            var x_diff = x[i] - x_mean;
+            var y_diff = y[i] - y_mean;
+            
+            numerator += x_diff * y_diff;
+            x_sum_sq += x_diff * x_diff;
+            y_sum_sq += y_diff * y_diff;
+        }
+        
+        var denominator = Math.sqrt(x_sum_sq * y_sum_sq);
+        return denominator == 0 ? 0 : numerator / denominator;
+    }
+}
+
+class LinearRegression {
+    var weights: Matrix;
+    var bias: float = 0.0;
+    var is_fitted: bool = false;
+    
+    fn fit(X: Matrix, y: Array<float>) {
+        if (X.rows != y.size()) {
+            throw "Number of samples in X and y must match";
+        }
+        
+        // Add bias column to X
+        var X_with_bias = Matrix(X.rows, X.cols + 1);
+        
+        for (var i = 0; i < X.rows; i++) {
+            X_with_bias.set(i, 0, 1.0); // Bias column
+            for (var j = 0; j < X.cols; j++) {
+                X_with_bias.set(i, j + 1, X.get(i, j));
+            }
+        }
+        
+        // Convert y to matrix
+        var y_matrix = Matrix(y.size(), 1);
+        for (var i = 0; i < y.size(); i++) {
+            y_matrix.set(i, 0, y[i]);
+        }
+        
+        // Normal equation: weights = (X^T * X)^-1 * X^T * y
+        var X_transpose = X_with_bias.transpose();
+        var XTX = X_transpose.multiply(X_with_bias);
+        var XTX_inv = XTX.inverse();
+        var XTy = X_transpose.multiply(y_matrix);
+        
+        weights = XTX_inv.multiply(XTy);
+        is_fitted = true;
+    }
+    
+    fn predict(X: Matrix) -> Array<float> {
+        if (!is_fitted) {
+            throw "Model must be fitted before prediction";
+        }
+        
+        var predictions = Array<float>();
+        
+        for (var i = 0; i < X.rows; i++) {
+            var prediction = weights.get(0, 0); // Bias term
+            
+            for (var j = 0; j < X.cols; j++) {
+                prediction += X.get(i, j) * weights.get(j + 1, 0);
+            }
+            
+            predictions.push(prediction);
+        }
+        
+        return predictions;
+    }
+    
+    fn score(X: Matrix, y: Array<float>) -> float {
+        var predictions = predict(X);
+        var y_mean = Statistics.mean(y);
+        
+        var ss_tot = 0.0;
+        var ss_res = 0.0;
+        
+        for (var i = 0; i < y.size(); i++) {
+            ss_tot += Math.pow(y[i] - y_mean, 2);
+            ss_res += Math.pow(y[i] - predictions[i], 2);
+        }
+        
+        return 1.0 - (ss_res / ss_tot); // R-squared
+    }
+}
+
+class KMeans {
+    var k: int;
+    var max_iterations: int = 100;
+    var centroids: Matrix;
+    var labels: Array<int>;
+    var is_fitted: bool = false;
+    
+    fn new(num_clusters: int) -> KMeans {
+        this.k = num_clusters;
+        return this;
+    }
+    
+    fn fit(X: Matrix) {
+        if (X.rows < k) {
+            throw "Number of samples must be >= number of clusters";
+        }
+        
+        // Initialize centroids randomly
+        centroids = Matrix(k, X.cols);
+        for (var i = 0; i < k; i++) {
+            for (var j = 0; j < X.cols; j++) {
+                var random_row = Math.random_int(0, X.rows - 1);
+                centroids.set(i, j, X.get(random_row, j));
+            }
+        }
+        
+        labels = Array<int>(X.rows);
+        
+        for (var iteration = 0; iteration < max_iterations; iteration++) {
+            var changed = false;
+            
+            // Assign points to nearest centroid
+            for (var i = 0; i < X.rows; i++) {
+                var nearest_centroid = find_nearest_centroid(X, i);
+                if (labels[i] != nearest_centroid) {
+                    labels[i] = nearest_centroid;
+                    changed = true;
+                }
+            }
+            
+            // Update centroids
+            update_centroids(X);
+            
+            if (!changed) break;
+        }
+        
+        is_fitted = true;
+    }
+    
+    fn predict(X: Matrix) -> Array<int> {
+        if (!is_fitted) {
+            throw "Model must be fitted before prediction";
+        }
+        
+        var predictions = Array<int>();
+        
+        for (var i = 0; i < X.rows; i++) {
+            predictions.push(find_nearest_centroid(X, i));
+        }
+        
+        return predictions;
+    }
+    
+    fn find_nearest_centroid(X: Matrix, point_index: int) -> int {
+        var min_distance = Float.MAX_VALUE;
+        var nearest = 0;
+        
+        for (var c = 0; c < k; c++) {
+            var distance = 0.0;
+            
+            for (var j = 0; j < X.cols; j++) {
+                var diff = X.get(point_index, j) - centroids.get(c, j);
+                distance += diff * diff;
+            }
+            
+            distance = Math.sqrt(distance);
+            
+            if (distance < min_distance) {
+                min_distance = distance;
+                nearest = c;
+            }
+        }
+        
+        return nearest;
+    }
+    
+    fn update_centroids(X: Matrix) {
+        for (var c = 0; c < k; c++) {
+            var count = 0;
+            
+            // Calculate mean for each feature
+            for (var j = 0; j < X.cols; j++) {
+                var sum = 0.0;
+                count = 0;
+                
+                for (var i = 0; i < X.rows; i++) {
+                    if (labels[i] == c) {
+                        sum += X.get(i, j);
+                        count++;
+                    }
+                }
+                
+                if (count > 0) {
+                    centroids.set(c, j, sum / count);
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    print "Advanced Data Science Demo with Replit Language";
+    print "==============================================";
+    
+    // Load dataset
+    print "Loading dataset...";
+    var df = DataFrame.load_csv("data/sales_data.csv", true);
+    
+    // Data exploration
+    print "Dataset shape: " + df.data.rows + " rows, " + df.data.cols + " columns";
+    
+    var stats = df.describe();
+    print "Dataset statistics computed";
+    
+    // Linear regression example
+    print "\nPerforming linear regression...";
+    var X = Matrix(df.data.rows, 2);
+    for (var i = 0; i < df.data.rows; i++) {
+        X.set(i, 0, df.data.get(i, 0)); // feature 1
+        X.set(i, 1, df.data.get(i, 1)); // feature 2
+    }
+    
+    var y = df.get_column("target");
+    
+    var model = LinearRegression();
+    model.fit(X, y);
+    var score = model.score(X, y);
+    print "Model R-squared: " + score;
+    
+    // Clustering example
+    print "\nPerforming K-means clustering...";
+    var kmeans = KMeans(3);
+    kmeans.fit(X);
+    var cluster_labels = kmeans.predict(X);
+    
+    print "Clustering completed. Found " + kmeans.k + " clusters";
+    
+    // Save results
+    print "\nSaving results...";
+    var results = DataFrame(Array<string>["feature1", "feature2", "target", "cluster"]);
+    for (var i = 0; i < X.rows; i++) {
+        var row = Array<float>();
+        row.push(X.get(i, 0));
+        row.push(X.get(i, 1));
+        row.push(y[i]);
+        row.push(cluster_labels[i]);
+        results.add_row(row);
+    }
+    
+    results.save_csv("output/analysis_results.csv");
+    
+    print "Analysis complete! Results saved to output/analysis_results.csv";
+}

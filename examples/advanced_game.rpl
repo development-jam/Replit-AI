@@ -1,0 +1,385 @@
+// Advanced Game Engine Demo - Asteroid Shooter
+import Graphics.*;
+import Physics.*;
+import Input.*;
+
+class GameState {
+    var score: int = 0;
+    var lives: int = 3;
+    var level: int = 1;
+    var game_over: bool = false;
+}
+
+class Player {
+    var position: Vector2;
+    var velocity: Vector2;
+    var rotation: float = 0.0;
+    var sprite: Sprite;
+    
+    fn new(x: float, y: float) -> Player {
+        this.position = Vector2(x, y);
+        this.velocity = Vector2(0, 0);
+        this.sprite = Sprite("player_ship.png", x, y);
+        return this;
+    }
+    
+    fn update(delta_time: float) {
+        // Handle input
+        if (Input.is_key_down("W")) {
+            var thrust = Vector2(Math.sin(rotation), -Math.cos(rotation)) * 200.0;
+            velocity = velocity + thrust * delta_time;
+        }
+        
+        if (Input.is_key_down("A")) {
+            rotation -= 180.0 * delta_time;
+        }
+        
+        if (Input.is_key_down("D")) {
+            rotation += 180.0 * delta_time;
+        }
+        
+        // Apply physics
+        position = position + velocity * delta_time;
+        velocity = velocity * 0.95; // Friction
+        
+        // Wrap around screen
+        if (position.x < 0) position.x = 800;
+        if (position.x > 800) position.x = 0;
+        if (position.y < 0) position.y = 600;
+        if (position.y > 600) position.y = 0;
+        
+        // Update sprite
+        sprite.move_to(position.x, position.y);
+        sprite.rotation = rotation;
+    }
+    
+    fn shoot() -> Bullet {
+        var bullet_pos = position + Vector2(Math.sin(rotation), -Math.cos(rotation)) * 30;
+        var bullet_vel = Vector2(Math.sin(rotation), -Math.cos(rotation)) * 400;
+        return Bullet(bullet_pos.x, bullet_pos.y, bullet_vel);
+    }
+}
+
+class Asteroid {
+    var position: Vector2;
+    var velocity: Vector2;
+    var rotation: float;
+    var size: int; // 1=small, 2=medium, 3=large
+    var sprite: Sprite;
+    
+    fn new(x: float, y: float, size: int) -> Asteroid {
+        this.position = Vector2(x, y);
+        this.size = size;
+        this.rotation = Math.random_float(0, 360);
+        
+        var speed = Math.random_float(50, 150);
+        var angle = Math.random_float(0, 360);
+        this.velocity = Vector2(Math.sin(angle), Math.cos(angle)) * speed;
+        
+        var texture = "asteroid" + size + ".png";
+        this.sprite = Sprite(texture, x, y);
+        this.sprite.scale = Vector2(size * 0.5, size * 0.5);
+        
+        return this;
+    }
+    
+    fn update(delta_time: float) {
+        position = position + velocity * delta_time;
+        rotation += 45.0 * delta_time;
+        
+        // Wrap around screen
+        if (position.x < -50) position.x = 850;
+        if (position.x > 850) position.x = -50;
+        if (position.y < -50) position.y = 650;
+        if (position.y > 650) position.y = -50;
+        
+        sprite.move_to(position.x, position.y);
+        sprite.rotation = rotation;
+    }
+    
+    fn split() -> Array<Asteroid> {
+        var fragments = Array<Asteroid>();
+        
+        if (size > 1) {
+            for (var i = 0; i < 2; i++) {
+                var fragment = Asteroid(position.x, position.y, size - 1);
+                var angle = Math.random_float(0, 360);
+                fragment.velocity = Vector2(Math.sin(angle), Math.cos(angle)) * 200;
+                fragments.push(fragment);
+            }
+        }
+        
+        return fragments;
+    }
+}
+
+class Bullet {
+    var position: Vector2;
+    var velocity: Vector2;
+    var lifetime: float = 3.0;
+    var sprite: Sprite;
+    
+    fn new(x: float, y: float, vel: Vector2) -> Bullet {
+        this.position = Vector2(x, y);
+        this.velocity = vel;
+        this.sprite = Sprite("bullet.png", x, y);
+        return this;
+    }
+    
+    fn update(delta_time: float) -> bool {
+        position = position + velocity * delta_time;
+        lifetime -= delta_time;
+        
+        sprite.move_to(position.x, position.y);
+        
+        return lifetime > 0 && 
+               position.x >= 0 && position.x <= 800 &&
+               position.y >= 0 && position.y <= 600;
+    }
+}
+
+class Game {
+    var window: Window;
+    var player: Player;
+    var asteroids: Array<Asteroid>;
+    var bullets: Array<Bullet>;
+    var particles: Array<Particle>;
+    var state: GameState;
+    var last_shot_time: float = 0;
+    
+    fn new() -> Game {
+        this.window = Window("Asteroid Shooter", 800, 600);
+        this.player = Player(400, 300);
+        this.asteroids = Array<Asteroid>();
+        this.bullets = Array<Bullet>();
+        this.particles = Array<Particle>();
+        this.state = GameState();
+        
+        // Create initial asteroids
+        spawn_asteroids(5);
+        
+        return this;
+    }
+    
+    fn spawn_asteroids(count: int) {
+        for (var i = 0; i < count; i++) {
+            var x = Math.random_float(0, 800);
+            var y = Math.random_float(0, 600);
+            
+            // Don't spawn too close to player
+            while (Vector2(x, y).distance(player.position) < 100) {
+                x = Math.random_float(0, 800);
+                y = Math.random_float(0, 600);
+            }
+            
+            asteroids.push(Asteroid(x, y, 3));
+        }
+    }
+    
+    fn update(delta_time: float) {
+        if (state.game_over) return;
+        
+        // Update player
+        player.update(delta_time);
+        
+        // Handle shooting
+        if (Input.is_key_pressed("SPACE") && Time.get_time() - last_shot_time > 0.2) {
+            bullets.push(player.shoot());
+            AudioSystem.play_sound("laser.wav", 0.5);
+            last_shot_time = Time.get_time();
+        }
+        
+        // Update bullets
+        for (var i = bullets.size() - 1; i >= 0; i--) {
+            if (!bullets[i].update(delta_time)) {
+                bullets.remove(i);
+            }
+        }
+        
+        // Update asteroids
+        for (var asteroid in asteroids) {
+            asteroid.update(delta_time);
+        }
+        
+        // Check collisions
+        check_collisions();
+        
+        // Spawn new wave if all asteroids destroyed
+        if (asteroids.empty()) {
+            state.level++;
+            spawn_asteroids(5 + state.level);
+        }
+    }
+    
+    fn check_collisions() {
+        // Bullet-asteroid collisions
+        for (var i = bullets.size() - 1; i >= 0; i--) {
+            for (var j = asteroids.size() - 1; j >= 0; j--) {
+                if (bullets[i].sprite.collides_with(asteroids[j].sprite)) {
+                    // Create explosion particles
+                    create_explosion(asteroids[j].position, 10);
+                    
+                    // Split asteroid
+                    var fragments = asteroids[j].split();
+                    for (var fragment in fragments) {
+                        asteroids.push(fragment);
+                    }
+                    
+                    // Remove bullet and asteroid
+                    bullets.remove(i);
+                    asteroids.remove(j);
+                    
+                    // Update score
+                    state.score += (4 - asteroids[j].size) * 100;
+                    
+                    AudioSystem.play_sound("explosion.wav", 0.7);
+                    break;
+                }
+            }
+        }
+        
+        // Player-asteroid collisions
+        for (var asteroid in asteroids) {
+            if (player.sprite.collides_with(asteroid.sprite)) {
+                create_explosion(player.position, 20);
+                state.lives--;
+                
+                if (state.lives <= 0) {
+                    state.game_over = true;
+                } else {
+                    // Respawn player in safe location
+                    player.position = Vector2(400, 300);
+                    player.velocity = Vector2(0, 0);
+                }
+                
+                AudioSystem.play_sound("player_death.wav");
+                break;
+            }
+        }
+    }
+    
+    fn create_explosion(pos: Vector2, count: int) {
+        for (var i = 0; i < count; i++) {
+            var angle = Math.random_float(0, 360);
+            var speed = Math.random_float(50, 200);
+            var velocity = Vector2(Math.sin(angle), Math.cos(angle)) * speed;
+            var color = Color.RGB(255, Math.random_int(100, 255), 0);
+            particles.push(Particle(pos, velocity, color, 1.0));
+        }
+    }
+    
+    fn render() {
+        window.clear();
+        
+        // Render game objects
+        for (var asteroid in asteroids) {
+            window.add_sprite(asteroid.sprite);
+        }
+        
+        for (var bullet in bullets) {
+            window.add_sprite(bullet.sprite);
+        }
+        
+        window.add_sprite(player.sprite);
+        
+        // Render particles
+        for (var particle in particles) {
+            particle.render(window);
+        }
+        
+        // Render UI
+        render_ui();
+        
+        window.render();
+    }
+    
+    fn render_ui() {
+        var white = Color.WHITE();
+        window.draw_text("Score: " + state.score, Vector2(10, 10), white, 24);
+        window.draw_text("Lives: " + state.lives, Vector2(10, 40), white, 24);
+        window.draw_text("Level: " + state.level, Vector2(10, 70), white, 24);
+        
+        if (state.game_over) {
+            var game_over_text = "GAME OVER - Press R to Restart";
+            window.draw_text(game_over_text, Vector2(250, 300), Color.RED(), 32);
+        }
+    }
+    
+    fn run() {
+        var last_time = Time.get_time();
+        
+        while (!window.should_close()) {
+            var current_time = Time.get_time();
+            var delta_time = current_time - last_time;
+            last_time = current_time;
+            
+            window.poll_events();
+            
+            if (Input.is_key_pressed("ESCAPE")) {
+                break;
+            }
+            
+            if (state.game_over && Input.is_key_pressed("R")) {
+                restart_game();
+            }
+            
+            update(delta_time);
+            render();
+        }
+        
+        window.close();
+    }
+    
+    fn restart_game() {
+        state = GameState();
+        player = Player(400, 300);
+        asteroids.clear();
+        bullets.clear();
+        particles.clear();
+        spawn_asteroids(5);
+    }
+}
+
+// Particle system for visual effects
+class Particle {
+    var position: Vector2;
+    var velocity: Vector2;
+    var color: Color;
+    var lifetime: float;
+    var max_lifetime: float;
+    
+    fn new(pos: Vector2, vel: Vector2, col: Color, life: float) -> Particle {
+        this.position = pos;
+        this.velocity = vel;
+        this.color = col;
+        this.lifetime = life;
+        this.max_lifetime = life;
+        return this;
+    }
+    
+    fn update(delta_time: float) -> bool {
+        position = position + velocity * delta_time;
+        lifetime -= delta_time;
+        
+        // Fade out over time
+        var alpha = lifetime / max_lifetime;
+        color.a = alpha;
+        
+        return lifetime > 0;
+    }
+    
+    fn render(window: Window) {
+        var size = 3.0 * (lifetime / max_lifetime);
+        window.draw_circle(position, size, color);
+    }
+}
+
+// Main game entry point
+fn main() {
+    print "Starting Asteroid Shooter...";
+    
+    var game = Game();
+    game.run();
+    
+    print "Game ended. Final score: " + game.state.score;
+}

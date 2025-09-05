@@ -1,0 +1,15 @@
+// Hello World in Replit Language
+print "Hello, World!";
+print "Welcome to the Replit Programming Language!";
+
+// Basic arithmetic
+print 2 + 3 * 4;
+print (10 - 2) / 4;
+
+// Boolean operations
+print true;
+print false;
+print !false;
+
+// String concatenation
+print "The answer is: " + 42;

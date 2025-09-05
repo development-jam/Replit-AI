@@ -1,0 +1,549 @@
+// Advanced GUI Application - Image Editor
+import Graphics.*;
+import UI.*;
+import FileSystem.*;
+import Threading.*;
+
+class ImageLayer {
+    var name: string;
+    var texture: Texture;
+    var position: Vector2;
+    var opacity: float = 1.0;
+    var blend_mode: BlendMode = BlendMode.NORMAL;
+    var visible: bool = true;
+    
+    fn new(layer_name: string, width: int, height: int) -> ImageLayer {
+        this.name = layer_name;
+        this.texture = Texture.create_empty(width, height);
+        this.position = Vector2(0, 0);
+        return this;
+    }
+    
+    fn from_file(layer_name: string, file_path: string) -> ImageLayer {
+        var layer = ImageLayer(layer_name, 0, 0);
+        layer.texture = Texture.load_from_file(file_path);
+        return layer;
+    }
+    
+    fn draw_pixel(x: int, y: int, color: Color) {
+        texture.set_pixel(x, y, color);
+    }
+    
+    fn draw_line(start: Vector2, end: Vector2, color: Color, thickness: int) {
+        texture.draw_line(start, end, color, thickness);
+    }
+    
+    fn draw_circle(center: Vector2, radius: float, color: Color, filled: bool) {
+        texture.draw_circle(center, radius, color, filled);
+    }
+    
+    fn apply_filter(filter: ImageFilter) {
+        texture = filter.apply(texture);
+    }
+    
+    fn resize(new_width: int, new_height: int) {
+        texture = texture.resize(new_width, new_height);
+    }
+}
+
+class ImageDocument {
+    var width: int;
+    var height: int;
+    var layers: Array<ImageLayer>;
+    var current_layer: int = 0;
+    var file_path: string = "";
+    var is_modified: bool = false;
+    
+    fn new(w: int, h: int) -> ImageDocument {
+        this.width = w;
+        this.height = h;
+        this.layers = Array<ImageLayer>();
+        
+        // Create default background layer
+        var bg_layer = ImageLayer("Background", w, h);
+        bg_layer.texture.fill(Color.WHITE());
+        layers.push(bg_layer);
+        
+        return this;
+    }
+    
+    fn add_layer(name: string) -> int {
+        var layer = ImageLayer(name, width, height);
+        layers.push(layer);
+        return layers.size() - 1;
+    }
+    
+    fn remove_layer(index: int) {
+        if (index >= 0 && index < layers.size() && layers.size() > 1) {
+            layers.remove(index);
+            if (current_layer >= layers.size()) {
+                current_layer = layers.size() - 1;
+            }
+        }
+    }
+    
+    fn move_layer(from_index: int, to_index: int) {
+        if (from_index >= 0 && from_index < layers.size() &&
+            to_index >= 0 && to_index < layers.size()) {
+            var layer = layers[from_index];
+            layers.remove(from_index);
+            layers.insert(to_index, layer);
+        }
+    }
+    
+    fn get_current_layer() -> ImageLayer {
+        return layers[current_layer];
+    }
+    
+    fn composite() -> Texture {
+        var result = Texture.create_empty(width, height);
+        result.fill(Color.TRANSPARENT());
+        
+        for (var layer in layers) {
+            if (layer.visible) {
+                result.blend(layer.texture, layer.position, layer.blend_mode, layer.opacity);
+            }
+        }
+        
+        return result;
+    }
+    
+    fn save(file_path: string) {
+        var composite_texture = composite();
+        composite_texture.save_to_file(file_path);
+        this.file_path = file_path;
+        this.is_modified = false;
+    }
+    
+    fn save_project(file_path: string) {
+        // Save project file with all layers and metadata
+        var project_data = serialize_project();
+        FileSystem.write_file(file_path, project_data);
+    }
+    
+    fn load_project(file_path: string) -> ImageDocument {
+        var project_data = FileSystem.read_file(file_path);
+        return deserialize_project(project_data);
+    }
+    
+    fn serialize_project() -> string {
+        // Serialize document to JSON format
+        var json = "{";
+        json += "\"width\":" + width + ",";
+        json += "\"height\":" + height + ",";
+        json += "\"layers\":[";
+        
+        for (var i = 0; i < layers.size(); i++) {
+            if (i > 0) json += ",";
+            json += serialize_layer(layers[i]);
+        }
+        
+        json += "]}";
+        return json;
+    }
+    
+    fn serialize_layer(layer: ImageLayer) -> string {
+        return "{" +
+            "\"name\":\"" + layer.name + "\"," +
+            "\"position\":{\"x\":" + layer.position.x + ",\"y\":" + layer.position.y + "}," +
+            "\"opacity\":" + layer.opacity + "," +
+            "\"visible\":" + layer.visible +
+            "}";
+    }
+}
+
+class Tool {
+    var name: string;
+    var cursor: Cursor;
+    
+    fn new(tool_name: string) -> Tool {
+        this.name = tool_name;
+        this.cursor = Cursor.DEFAULT;
+        return this;
+    }
+    
+    virtual fn on_mouse_down(pos: Vector2, button: MouseButton, layer: ImageLayer) {}
+    virtual fn on_mouse_drag(pos: Vector2, last_pos: Vector2, button: MouseButton, layer: ImageLayer) {}
+    virtual fn on_mouse_up(pos: Vector2, button: MouseButton, layer: ImageLayer) {}
+    virtual fn on_key_press(key: string) {}
+}
+
+class BrushTool extends Tool {
+    var brush_size: int = 5;
+    var brush_color: Color = Color.BLACK();
+    var brush_hardness: float = 1.0;
+    var is_painting: bool = false;
+    
+    fn new() -> BrushTool {
+        super("Brush");
+        this.cursor = Cursor.CROSSHAIR;
+        return this;
+    }
+    
+    override fn on_mouse_down(pos: Vector2, button: MouseButton, layer: ImageLayer) {
+        if (button == MouseButton.LEFT) {
+            is_painting = true;
+            paint_at(pos, layer);
+        }
+    }
+    
+    override fn on_mouse_drag(pos: Vector2, last_pos: Vector2, button: MouseButton, layer: ImageLayer) {
+        if (is_painting && button == MouseButton.LEFT) {
+            paint_line(last_pos, pos, layer);
+        }
+    }
+    
+    override fn on_mouse_up(pos: Vector2, button: MouseButton, layer: ImageLayer) {
+        is_painting = false;
+    }
+    
+    fn paint_at(pos: Vector2, layer: ImageLayer) {
+        for (var y = -brush_size; y <= brush_size; y++) {
+            for (var x = -brush_size; x <= brush_size; x++) {
+                var distance = Math.sqrt(x * x + y * y);
+                if (distance <= brush_size) {
+                    var alpha = brush_hardness;
+                    if (brush_hardness < 1.0) {
+                        alpha = Math.clamp(1.0 - (distance / brush_size), 0.0, 1.0);
+                    }
+                    
+                    var pixel_color = Color(brush_color.r, brush_color.g, brush_color.b, alpha);
+                    layer.draw_pixel(pos.x + x, pos.y + y, pixel_color);
+                }
+            }
+        }
+    }
+    
+    fn paint_line(start: Vector2, end: Vector2, layer: ImageLayer) {
+        var distance = start.distance(end);
+        var steps = Math.max(1, distance);
+        
+        for (var i = 0; i <= steps; i++) {
+            var t = i / steps;
+            var pos = start.lerp(end, t);
+            paint_at(pos, layer);
+        }
+    }
+}
+
+class SelectionTool extends Tool {
+    var selection_start: Vector2;
+    var selection_end: Vector2;
+    var is_selecting: bool = false;
+    var has_selection: bool = false;
+    
+    fn new() -> SelectionTool {
+        super("Selection");
+        return this;
+    }
+    
+    override fn on_mouse_down(pos: Vector2, button: MouseButton, layer: ImageLayer) {
+        if (button == MouseButton.LEFT) {
+            selection_start = pos;
+            is_selecting = true;
+            has_selection = false;
+        }
+    }
+    
+    override fn on_mouse_drag(pos: Vector2, last_pos: Vector2, button: MouseButton, layer: ImageLayer) {
+        if (is_selecting) {
+            selection_end = pos;
+        }
+    }
+    
+    override fn on_mouse_up(pos: Vector2, button: MouseButton, layer: ImageLayer) {
+        if (is_selecting) {
+            selection_end = pos;
+            is_selecting = false;
+            has_selection = true;
+        }
+    }
+    
+    fn get_selection_rect() -> Rectangle {
+        var min_x = Math.min(selection_start.x, selection_end.x);
+        var min_y = Math.min(selection_start.y, selection_end.y);
+        var max_x = Math.max(selection_start.x, selection_end.x);
+        var max_y = Math.max(selection_start.y, selection_end.y);
+        
+        return Rectangle(min_x, min_y, max_x - min_x, max_y - min_y);
+    }
+}
+
+class ImageEditor {
+    var window: Window;
+    var document: ImageDocument;
+    var current_tool: Tool;
+    var tools: Map<string, Tool>;
+    var ui: UIManager;
+    var viewport: Viewport;
+    var last_mouse_pos: Vector2;
+    
+    fn new() -> ImageEditor {
+        this.window = Window("Replit Image Editor", 1200, 800);
+        this.document = ImageDocument(800, 600);
+        this.ui = UIManager();
+        this.viewport = Viewport();
+        this.tools = Map<string, Tool>();
+        
+        setup_tools();
+        setup_ui();
+        
+        return this;
+    }
+    
+    fn setup_tools() {
+        tools["brush"] = BrushTool();
+        tools["selection"] = SelectionTool();
+        // Add more tools: eraser, fill bucket, eyedropper, etc.
+        
+        current_tool = tools["brush"];
+    }
+    
+    fn setup_ui() {
+        // Create toolbar
+        var toolbar = ui.create_panel("toolbar", Rectangle(0, 0, 200, window.height));
+        toolbar.background_color = Color.RGB(50, 50, 50);
+        
+        // Tool buttons
+        var y_offset = 10;
+        for (var tool_name in tools.keys()) {
+            var button = ui.create_button(tool_name, Rectangle(10, y_offset, 180, 30));
+            button.text = StringUtils.to_upper(tool_name);
+            button.on_click = fn(tool_name) {
+                current_tool = tools[tool_name];
+            };
+            toolbar.add_child(button);
+            y_offset += 40;
+        }
+        
+        // Layer panel
+        var layer_panel = ui.create_panel("layers", Rectangle(window.width - 250, 0, 250, window.height));
+        layer_panel.background_color = Color.RGB(60, 60, 60);
+        
+        var layer_label = ui.create_label("layers_title", Rectangle(10, 10, 230, 20));
+        layer_label.text = "Layers";
+        layer_label.text_color = Color.WHITE();
+        layer_panel.add_child(layer_label);
+        
+        // Canvas viewport
+        viewport.bounds = Rectangle(200, 0, window.width - 450, window.height);
+        viewport.document = document;
+    }
+    
+    fn run() {
+        while (!window.should_close()) {
+            handle_input();
+            update();
+            render();
+        }
+    }
+    
+    fn handle_input() {
+        window.poll_events();
+        
+        var mouse_pos = Input.get_mouse_position();
+        
+        // Handle tool input
+        if (viewport.bounds.contains(mouse_pos)) {
+            var canvas_pos = viewport.screen_to_canvas(mouse_pos);
+            
+            if (Input.is_mouse_down(MouseButton.LEFT)) {
+                if (!Input.was_mouse_down(MouseButton.LEFT)) {
+                    current_tool.on_mouse_down(canvas_pos, MouseButton.LEFT, document.get_current_layer());
+                } else {
+                    current_tool.on_mouse_drag(canvas_pos, last_mouse_pos, MouseButton.LEFT, document.get_current_layer());
+                }
+                document.is_modified = true;
+            } else if (Input.was_mouse_down(MouseButton.LEFT)) {
+                current_tool.on_mouse_up(canvas_pos, MouseButton.LEFT, document.get_current_layer());
+            }
+        }
+        
+        // Handle UI input
+        ui.handle_input();
+        
+        // Keyboard shortcuts
+        if (Input.is_key_pressed("CTRL+S")) {
+            save_document();
+        } else if (Input.is_key_pressed("CTRL+O")) {
+            open_document();
+        } else if (Input.is_key_pressed("CTRL+N")) {
+            new_document();
+        } else if (Input.is_key_pressed("CTRL+Z")) {
+            undo();
+        } else if (Input.is_key_pressed("CTRL+Y")) {
+            redo();
+        }
+        
+        last_mouse_pos = viewport.screen_to_canvas(mouse_pos);
+    }
+    
+    fn update() {
+        ui.update();
+        viewport.update();
+    }
+    
+    fn render() {
+        window.clear();
+        
+        // Render viewport
+        viewport.render(window);
+        
+        // Render UI
+        ui.render(window);
+        
+        // Render status bar
+        render_status_bar();
+        
+        window.present();
+    }
+    
+    fn render_status_bar() {
+        var status_rect = Rectangle(0, window.height - 30, window.width, 30);
+        window.draw_rectangle(status_rect, Color.RGB(40, 40, 40));
+        
+        var status_text = "Tool: " + current_tool.name + 
+                         " | Size: " + document.width + "x" + document.height +
+                         " | Layer: " + document.get_current_layer().name;
+        
+        if (document.is_modified) {
+            status_text += " | Modified";
+        }
+        
+        window.draw_text(status_text, Vector2(10, window.height - 20), Color.WHITE(), 12);
+    }
+    
+    fn save_document() {
+        if (document.file_path.empty()) {
+            var file_path = ui.show_save_dialog("Save Image", "*.png;*.jpg;*.bmp");
+            if (!file_path.empty()) {
+                document.save(file_path);
+            }
+        } else {
+            document.save(document.file_path);
+        }
+    }
+    
+    fn open_document() {
+        var file_path = ui.show_open_dialog("Open Image", "*.png;*.jpg;*.bmp;*.rpl");
+        if (!file_path.empty()) {
+            if (StringUtils.ends_with(file_path, ".rpl")) {
+                document = ImageDocument.load_project(file_path);
+            } else {
+                // Create new document from image file
+                var layer = ImageLayer.from_file("Image", file_path);
+                document = ImageDocument(layer.texture.width, layer.texture.height);
+                document.layers[0] = layer;
+            }
+            viewport.document = document;
+        }
+    }
+    
+    fn new_document() {
+        var dialog = ui.create_dialog("New Document");
+        // ... dialog for width/height input
+        // Create new document based on input
+    }
+    
+    fn undo() {
+        // Implement undo functionality
+    }
+    
+    fn redo() {
+        // Implement redo functionality
+    }
+}
+
+class Viewport {
+    var bounds: Rectangle;
+    var document: ImageDocument;
+    var zoom: float = 1.0;
+    var pan_offset: Vector2 = Vector2(0, 0);
+    
+    fn screen_to_canvas(screen_pos: Vector2) -> Vector2 {
+        var relative_pos = screen_pos - Vector2(bounds.x, bounds.y) - pan_offset;
+        return relative_pos / zoom;
+    }
+    
+    fn canvas_to_screen(canvas_pos: Vector2) -> Vector2 {
+        return canvas_pos * zoom + pan_offset + Vector2(bounds.x, bounds.y);
+    }
+    
+    fn update() {
+        // Handle zoom and pan
+        if (Input.is_key_down("CTRL")) {
+            var scroll = Input.get_scroll_delta();
+            if (scroll != 0) {
+                var old_zoom = zoom;
+                zoom = Math.clamp(zoom + scroll * 0.1, 0.1, 10.0);
+                
+                // Adjust pan to zoom towards mouse cursor
+                var mouse_pos = Input.get_mouse_position();
+                if (bounds.contains(mouse_pos)) {
+                    var zoom_factor = zoom / old_zoom;
+                    var relative_mouse = mouse_pos - Vector2(bounds.x, bounds.y);
+                    pan_offset = (pan_offset - relative_mouse) * zoom_factor + relative_mouse;
+                }
+            }
+        }
+        
+        // Handle panning
+        if (Input.is_mouse_down(MouseButton.MIDDLE)) {
+            var mouse_delta = Input.get_mouse_delta();
+            pan_offset = pan_offset + mouse_delta;
+        }
+    }
+    
+    fn render(window: Window) {
+        // Clip rendering to viewport bounds
+        window.set_clip_rect(bounds);
+        
+        // Draw checkerboard background
+        draw_checkerboard(window);
+        
+        // Draw document
+        if (document != null) {
+            var composite = document.composite();
+            var canvas_rect = Rectangle(
+                pan_offset.x + bounds.x,
+                pan_offset.y + bounds.y,
+                document.width * zoom,
+                document.height * zoom
+            );
+            
+            window.draw_texture(composite, canvas_rect);
+            
+            // Draw layer boundaries
+            for (var i = 0; i < document.layers.size(); i++) {
+                if (i == document.current_layer) {
+                    window.draw_rectangle_outline(canvas_rect, Color.BLUE(), 2);
+                }
+            }
+        }
+        
+        window.clear_clip_rect();
+    }
+    
+    fn draw_checkerboard(window: Window) {
+        var checker_size = 16;
+        var light_color = Color.RGB(240, 240, 240);
+        var dark_color = Color.RGB(200, 200, 200);
+        
+        for (var y = bounds.y; y < bounds.y + bounds.height; y += checker_size) {
+            for (var x = bounds.x; x < bounds.x + bounds.width; x += checker_size) {
+                var is_light = ((x / checker_size) + (y / checker_size)) % 2 == 0;
+                var color = is_light ? light_color : dark_color;
+                window.draw_rectangle(Rectangle(x, y, checker_size, checker_size), color);
+            }
+        }
+    }
+}
+
+fn main() {
+    print "Starting Replit Image Editor...";
+    
+    var editor = ImageEditor();
+    editor.run();
+    
+    print "Image Editor closed";
+}

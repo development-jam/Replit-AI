@@ -1,0 +1,472 @@
+// Advanced Network Application - Real-time Chat Server
+import Network.*;
+import Threading.*;
+import FileSystem.*;
+import Time.*;
+
+class ChatMessage {
+    var timestamp: string;
+    var username: string;
+    var content: string;
+    var id: int;
+    
+    fn new(user: string, msg: string) -> ChatMessage {
+        this.timestamp = Time.format_time();
+        this.username = user;
+        this.content = msg;
+        this.id = Math.random_int(1000, 9999);
+        return this;
+    }
+    
+    fn to_json() -> string {
+        return "{" +
+            "\"id\":" + id + "," +
+            "\"timestamp\":\"" + timestamp + "\"," +
+            "\"username\":\"" + username + "\"," +
+            "\"content\":\"" + content + "\"" +
+            "}";
+    }
+    
+    fn from_json(json: string) -> ChatMessage {
+        // Parse JSON and create ChatMessage
+        // Simplified JSON parsing for demo
+        var msg = ChatMessage("", "");
+        // ... JSON parsing logic
+        return msg;
+    }
+}
+
+class ChatRoom {
+    var name: string;
+    var messages: Array<ChatMessage>;
+    var users: Set<string>;
+    var max_messages: int = 1000;
+    
+    fn new(room_name: string) -> ChatRoom {
+        this.name = room_name;
+        this.messages = Array<ChatMessage>();
+        this.users = Set<string>();
+        return this;
+    }
+    
+    fn add_user(username: string) {
+        users.insert(username);
+        var join_msg = ChatMessage("System", username + " joined the room");
+        add_message(join_msg);
+    }
+    
+    fn remove_user(username: string) {
+        users.erase(username);
+        var leave_msg = ChatMessage("System", username + " left the room");
+        add_message(leave_msg);
+    }
+    
+    fn add_message(message: ChatMessage) {
+        messages.push(message);
+        
+        // Keep only recent messages
+        if (messages.size() > max_messages) {
+            messages.remove(0);
+        }
+        
+        // Save to file for persistence
+        save_to_file();
+    }
+    
+    fn get_recent_messages(count: int) -> Array<ChatMessage> {
+        var start = Math.max(0, messages.size() - count);
+        return messages.slice(start, messages.size());
+    }
+    
+    fn save_to_file() {
+        var filename = "chat_logs/" + name + ".log";
+        var content = "";
+        
+        for (var msg in messages) {
+            content += msg.to_json() + "\n";
+        }
+        
+        FileSystem.write_file(filename, content);
+    }
+    
+    fn load_from_file() {
+        var filename = "chat_logs/" + name + ".log";
+        
+        if (!FileSystem.file_exists(filename)) {
+            return;
+        }
+        
+        var content = FileSystem.read_file(filename);
+        var lines = StringUtils.split(content, '\n');
+        
+        for (var line in lines) {
+            if (line.length() > 0) {
+                var msg = ChatMessage.from_json(line);
+                messages.push(msg);
+            }
+        }
+    }
+}
+
+class ChatClient {
+    var socket: TcpSocket;
+    var username: string;
+    var current_room: string;
+    var is_connected: bool = false;
+    
+    fn new(server_address: string, port: int) -> ChatClient {
+        this.socket = TcpSocket();
+        return this;
+    }
+    
+    fn connect(server_address: string, port: int) -> bool {
+        try {
+            socket.connect(server_address, port);
+            is_connected = true;
+            
+            // Start receiving messages in background
+            Threading.run_async(fn() {
+                receive_messages();
+            });
+            
+            return true;
+        } catch (NetworkException e) {
+            print "Failed to connect: " + e.message;
+            return false;
+        }
+    }
+    
+    fn login(user: string) {
+        username = user;
+        var login_data = "{\"type\":\"login\",\"username\":\"" + user + "\"}";
+        socket.send(login_data);
+    }
+    
+    fn join_room(room_name: string) {
+        current_room = room_name;
+        var join_data = "{\"type\":\"join_room\",\"room\":\"" + room_name + "\"}";
+        socket.send(join_data);
+    }
+    
+    fn send_message(content: string) {
+        if (!is_connected || current_room.empty()) {
+            print "Not connected or not in a room";
+            return;
+        }
+        
+        var msg_data = "{" +
+            "\"type\":\"message\"," +
+            "\"room\":\"" + current_room + "\"," +
+            "\"content\":\"" + content + "\"" +
+            "}";
+        
+        socket.send(msg_data);
+    }
+    
+    fn receive_messages() {
+        while (is_connected) {
+            try {
+                var data = socket.receive();
+                if (data.length() > 0) {
+                    handle_server_message(data);
+                }
+            } catch (NetworkException e) {
+                print "Connection lost: " + e.message;
+                is_connected = false;
+                break;
+            }
+        }
+    }
+    
+    fn handle_server_message(data: string) {
+        // Parse server message and handle accordingly
+        if (StringUtils.contains(data, "\"type\":\"message\"")) {
+            // Extract and display chat message
+            display_message(data);
+        } else if (StringUtils.contains(data, "\"type\":\"user_joined\"")) {
+            // Handle user join notification
+            display_system_message(data);
+        } else if (StringUtils.contains(data, "\"type\":\"user_left\"")) {
+            // Handle user leave notification
+            display_system_message(data);
+        }
+    }
+    
+    fn display_message(json_data: string) {
+        var msg = ChatMessage.from_json(json_data);
+        print "[" + msg.timestamp + "] " + msg.username + ": " + msg.content;
+    }
+    
+    fn display_system_message(json_data: string) {
+        // Extract system message and display
+        print "System: " + json_data;
+    }
+    
+    fn disconnect() {
+        is_connected = false;
+        socket.close();
+    }
+}
+
+class ChatServer {
+    var server_socket: TcpServerSocket;
+    var clients: Map<string, TcpSocket>;
+    var rooms: Map<string, ChatRoom>;
+    var is_running: bool = false;
+    var port: int;
+    
+    fn new(server_port: int) -> ChatServer {
+        this.port = server_port;
+        this.server_socket = TcpServerSocket();
+        this.clients = Map<string, TcpSocket>();
+        this.rooms = Map<string, ChatRoom>();
+        
+        // Create default rooms
+        rooms["general"] = ChatRoom("general");
+        rooms["random"] = ChatRoom("random");
+        rooms["gaming"] = ChatRoom("gaming");
+        
+        return this;
+    }
+    
+    fn start() {
+        try {
+            server_socket.bind("0.0.0.0", port);
+            server_socket.listen(10);
+            is_running = true;
+            
+            print "Chat server started on port " + port;
+            print "Available rooms: " + StringUtils.join(rooms.keys(), ", ");
+            
+            // Accept clients in background threads
+            while (is_running) {
+                var client_socket = server_socket.accept();
+                var client_id = "client_" + Math.random_int(1000, 9999);
+                
+                clients[client_id] = client_socket;
+                
+                // Handle client in separate thread
+                Threading.run_async(fn() {
+                    handle_client(client_id, client_socket);
+                });
+            }
+            
+        } catch (NetworkException e) {
+            print "Server error: " + e.message;
+        }
+    }
+    
+    fn handle_client(client_id: string, socket: TcpSocket) {
+        var username = "";
+        var current_room = "";
+        
+        try {
+            while (is_running) {
+                var data = socket.receive();
+                if (data.empty()) {
+                    break; // Client disconnected
+                }
+                
+                var request = parse_json(data);
+                var type = request["type"];
+                
+                if (type == "login") {
+                    username = request["username"];
+                    print "User " + username + " connected";
+                    
+                } else if (type == "join_room") {
+                    var room_name = request["room"];
+                    
+                    if (rooms.contains(room_name)) {
+                        // Leave previous room
+                        if (!current_room.empty()) {
+                            rooms[current_room].remove_user(username);
+                        }
+                        
+                        // Join new room
+                        current_room = room_name;
+                        rooms[room_name].add_user(username);
+                        
+                        // Send recent messages to client
+                        var recent = rooms[room_name].get_recent_messages(20);
+                        for (var msg in recent) {
+                            socket.send(msg.to_json());
+                        }
+                        
+                    } else {
+                        socket.send("{\"type\":\"error\",\"message\":\"Room not found\"}");
+                    }
+                    
+                } else if (type == "message") {
+                    var room_name = request["room"];
+                    var content = request["content"];
+                    
+                    if (rooms.contains(room_name)) {
+                        var message = ChatMessage(username, content);
+                        rooms[room_name].add_message(message);
+                        
+                        // Broadcast to all users in room
+                        broadcast_to_room(room_name, message.to_json());
+                    }
+                    
+                } else if (type == "create_room") {
+                    var room_name = request["name"];
+                    if (!rooms.contains(room_name)) {
+                        rooms[room_name] = ChatRoom(room_name);
+                        print "Room '" + room_name + "' created";
+                    }
+                }
+            }
+            
+        } catch (NetworkException e) {
+            print "Client " + username + " disconnected: " + e.message;
+        }
+        
+        // Cleanup on disconnect
+        if (!current_room.empty()) {
+            rooms[current_room].remove_user(username);
+        }
+        clients.erase(client_id);
+        socket.close();
+    }
+    
+    fn broadcast_to_room(room_name: string, message: string) {
+        var room = rooms[room_name];
+        
+        for (var client_id in clients.keys()) {
+            var socket = clients[client_id];
+            // Check if client is in this room (simplified)
+            try {
+                socket.send(message);
+            } catch (NetworkException e) {
+                // Client disconnected, will be cleaned up
+            }
+        }
+    }
+    
+    fn parse_json(data: string) -> Map<string, string> {
+        // Simplified JSON parser for demo
+        var result = Map<string, string>();
+        // ... JSON parsing logic
+        return result;
+    }
+    
+    fn stop() {
+        is_running = false;
+        server_socket.close();
+        
+        // Close all client connections
+        for (var client_id in clients.keys()) {
+            clients[client_id].close();
+        }
+        
+        print "Chat server stopped";
+    }
+}
+
+// CLI Application for Chat
+class ChatCLI {
+    var client: ChatClient;
+    var is_running: bool = true;
+    
+    fn new() -> ChatCLI {
+        this.client = ChatClient("localhost", 8080);
+        return this;
+    }
+    
+    fn run() {
+        print "=== Replit Chat Client ===";
+        print "Commands: /connect <server> <port>, /login <username>, /join <room>, /quit";
+        print "Type messages normally to send to current room";
+        
+        // Read input in separate thread
+        Threading.run_async(fn() {
+            read_user_input();
+        });
+        
+        while (is_running) {
+            Time.sleep(0.1); // Prevent busy waiting
+        }
+    }
+    
+    fn read_user_input() {
+        while (is_running) {
+            var input = Console.read_line();
+            
+            if (StringUtils.starts_with(input, "/")) {
+                handle_command(input);
+            } else {
+                client.send_message(input);
+            }
+        }
+    }
+    
+    fn handle_command(command: string) {
+        var parts = StringUtils.split(command, ' ');
+        var cmd = parts[0];
+        
+        if (cmd == "/connect" && parts.size() >= 3) {
+            var server = parts[1];
+            var port = StringUtils.to_int(parts[2]);
+            
+            if (client.connect(server, port)) {
+                print "Connected to " + server + ":" + port;
+            } else {
+                print "Failed to connect";
+            }
+            
+        } else if (cmd == "/login" && parts.size() >= 2) {
+            var username = parts[1];
+            client.login(username);
+            print "Logged in as " + username;
+            
+        } else if (cmd == "/join" && parts.size() >= 2) {
+            var room = parts[1];
+            client.join_room(room);
+            print "Joined room: " + room;
+            
+        } else if (cmd == "/quit") {
+            client.disconnect();
+            is_running = false;
+            print "Goodbye!";
+            
+        } else {
+            print "Unknown command: " + cmd;
+        }
+    }
+}
+
+// Main application entry points
+fn run_server() {
+    var server = ChatServer(8080);
+    
+    // Handle graceful shutdown
+    signal.on_interrupt(fn() {
+        print "Shutting down server...";
+        server.stop();
+    });
+    
+    server.start();
+}
+
+fn run_client() {
+    var cli = ChatCLI();
+    cli.run();
+}
+
+fn main() {
+    print "Replit Advanced Chat Application";
+    print "1. Run Server";
+    print "2. Run Client";
+    print "Choose option (1 or 2): ";
+    
+    var choice = Console.read_line();
+    
+    if (choice == "1") {
+        run_server();
+    } else if (choice == "2") {
+        run_client();
+    } else {
+        print "Invalid choice";
+    }
+}
